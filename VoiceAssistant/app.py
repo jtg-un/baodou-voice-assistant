@@ -7,9 +7,10 @@ import numpy as np
 import pyaudiowpatch as pyaudio
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QVBoxLayout,
                              QWidget, QLabel, QPushButton, QHBoxLayout,
-                             QLineEdit, QFormLayout, QGroupBox, QPlainTextEdit)
+                             QLineEdit, QFormLayout, QGroupBox, QPlainTextEdit,
+                             QGridLayout, QFrame)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSettings
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QFont, QTextCursor, QColor
 
 import config
 from llm_engine import LLMEngine
@@ -25,19 +26,18 @@ class VoiceWorker(QThread):
     def __init__(self):
         super().__init__()
         self.running = True
-        self.is_listening = False  # 初始状态：不监听
+        self.is_listening = False
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        # 加载 Whisper 模型到显卡
+        # 加载 Whisper 模型
         self.asr_model = whisper.load_model(config.WHISPER_MODEL_SIZE, device=self.device)
         self.llm = LLMEngine()
 
     def set_listening(self, state):
-        """控制监听开关的方法"""
         self.is_listening = state
 
     def run(self):
         p = pyaudio.PyAudio()
-        self.status_signal.emit(f"🚀 环境就绪 ({self.device})")
+        self.status_signal.emit(f"🚀 就绪 ({self.device})")
 
         def get_loopback_stream(pa_obj):
             try:
@@ -50,23 +50,20 @@ class VoiceWorker(QThread):
                         loopback_device = info
                         break
                 if not loopback_device: return None, None
-
-                new_stream = pa_obj.open(
+                return pa_obj.open(
                     format=pyaudio.paInt16,
                     channels=loopback_device["maxInputChannels"],
                     rate=int(loopback_device["defaultSampleRate"]),
                     input=True,
                     input_device_index=loopback_device["index"]
-                )
-                return new_stream, loopback_device
+                ), loopback_device
             except:
                 return None, None
 
         stream, dev_info = get_loopback_stream(p)
         if not stream:
-            self.status_signal.emit("❌ 错误：未找到音频流")
+            self.status_signal.emit("❌ 未找到音频设备")
             return
-
         self.device_signal.emit(dev_info['name'])
 
         frames = []
@@ -74,14 +71,12 @@ class VoiceWorker(QThread):
         silence_start = None
 
         while self.running:
-            # 如果处于非监听状态，则跳过后续逻辑
             if not self.is_listening:
-                time.sleep(0.1)  # 降低CPU占用
+                time.sleep(0.1)
                 continue
-
             try:
                 data = stream.read(2048, exception_on_overflow=False)
-            except OSError:
+            except:
                 stream.close()
                 stream, _ = get_loopback_stream(p)
                 continue
@@ -93,15 +88,14 @@ class VoiceWorker(QThread):
                 if not is_speaking:
                     is_speaking = True
                     frames = []
-                    self.status_signal.emit("🎙️ 正在录音...")
+                    self.status_signal.emit("🎙️ 录音中...")
                 frames.append(data)
                 silence_start = None
             else:
                 if is_speaking:
                     if silence_start is None: silence_start = time.time()
                     if time.time() - silence_start > config.SILENCE_LIMIT:
-                        self.status_signal.emit("📝 正在转写...")
-
+                        self.status_signal.emit("📝 转写中...")
                         with wave.open(config.TEMP_AUDIO, 'wb') as wf:
                             wf.setnchannels(dev_info["maxInputChannels"])
                             wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
@@ -111,13 +105,11 @@ class VoiceWorker(QThread):
                         result = self.asr_model.transcribe(config.TEMP_AUDIO, language="zh",
                                                            fp16=(self.device == "cuda"))
                         user_text = result["text"].strip()
-
                         if user_text:
                             self.user_signal.emit(user_text)
-                            self.status_signal.emit("🤖 助手正在思考...")
+                            self.status_signal.emit("🤖 思考中...")
                             ai_reply = self.llm.get_reply(user_text)
                             self.ai_signal.emit(ai_reply)
-
                         is_speaking = False
                         silence_start = None
                         self.status_signal.emit("🟢 监听中...")
@@ -143,121 +135,140 @@ class VoiceAssistantUI(QMainWindow):
         self.worker.start()
 
     def init_ui(self):
-        self.setWindowTitle("Java面试语音助手 - 毕设演示版")
-        self.setFixedSize(650, 950)
-        self.setStyleSheet("background-color: #F0F2F5;")
+        self.setWindowTitle("Java面试智能语音助手")
+        self.setFixedSize(550, 850)
+        self.setStyleSheet("""
+            QMainWindow { background-color: #FFFFFF; }
+            QGroupBox { font-size: 12px; font-weight: bold; color: #555; border: 1px solid #E8E8E8; border-radius: 8px; margin-top: 10px; padding: 10px; }
+            QTextEdit { background-color: #F7F8FA; border: none; border-radius: 10px; padding: 10px; font-family: 'Segoe UI', 'Microsoft YaHei'; }
+            QLineEdit, QPlainTextEdit { border: 1px solid #D9D9D9; border-radius: 4px; padding: 4px; }
+            QPushButton#actionBtn { border-radius: 20px; color: white; font-weight: bold; font-size: 14px; }
+        """)
 
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout(main_widget)
+        layout.setContentsMargins(20, 15, 20, 15)
 
-        # --- 配置面板 ---
-        config_group = QGroupBox("API & 模型配置")
-        form_layout = QFormLayout()
+        # --- 顶部：状态 & 设备 ---
+        header = QHBoxLayout()
+        self.status_dot = QLabel("●")
+        self.status_dot.setStyleSheet("color: #FF4D4F; font-size: 14px;")
+        self.status_label = QLabel(" 监听停止")
+        self.device_label = QLabel("🎧 检测中...")
+        self.device_label.setStyleSheet("color: #999; font-size: 11px;")
+        header.addWidget(self.status_dot)
+        header.addWidget(self.status_label)
+        header.addStretch()
+        header.addWidget(self.device_label)
+        layout.addLayout(header)
+
+        # --- 配置区：可勾选折叠 ---
+        self.config_group = QGroupBox("系统设置 (API & 提示词)")
+        self.config_group.setCheckable(True)
+        self.config_group.setChecked(False)  # 默认收起
+
+        grid = QGridLayout()
         self.url_input = QLineEdit()
         self.key_input = QLineEdit()
         self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.model_input = QLineEdit()
-        form_layout.addRow("Base URL:", self.url_input)
-        form_layout.addRow("API Key:", self.key_input)
-        form_layout.addRow("Model Name:", self.model_input)
-        config_group.setLayout(form_layout)
-        main_layout.addWidget(config_group)
-
-        # --- 提示词面板 ---
-        prompt_group = QGroupBox("系统提示词 (System Prompt)")
-        prompt_layout = QVBoxLayout()
         self.prompt_input = QPlainTextEdit()
-        self.prompt_input.setFixedHeight(80)
-        prompt_layout.addWidget(self.prompt_input)
-        prompt_group.setLayout(prompt_layout)
-        main_layout.addWidget(prompt_group)
+        self.prompt_input.setFixedHeight(50)
 
-        # --- 操作按钮 ---
-        btn_layout = QHBoxLayout()
-        self.apply_btn = QPushButton("💾 保存配置")
-        self.apply_btn.setStyleSheet("background-color: #1890FF; color: white; padding: 10px; font-weight: bold;")
-        self.apply_btn.clicked.connect(self.save_and_apply)
+        grid.addWidget(QLabel("Base URL:"), 0, 0)
+        grid.addWidget(self.url_input, 0, 1)
+        grid.addWidget(QLabel("API Key:"), 1, 0)
+        grid.addWidget(self.key_input, 1, 1)
+        grid.addWidget(QLabel("模型:"), 2, 0)
+        grid.addWidget(self.model_input, 2, 1)
+        grid.addWidget(QLabel("提示词:"), 3, 0)
+        grid.addWidget(self.prompt_input, 3, 1)
 
-        # 开始/停止监听按钮
-        self.listen_btn = QPushButton("▶ 开始监听")
-        self.listen_btn.setStyleSheet("background-color: #52C41A; color: white; padding: 10px; font-weight: bold;")
-        self.listen_btn.clicked.connect(self.toggle_listening)
+        self.save_btn = QPushButton("💾 保存配置")
+        self.save_btn.setStyleSheet("background-color: #FAFAFA; border: 1px solid #D9D9D9; padding: 5px;")
+        self.save_btn.clicked.connect(self.save_and_apply)
+        grid.addWidget(self.save_btn, 4, 0, 1, 2)
 
-        btn_layout.addWidget(self.apply_btn)
-        btn_layout.addWidget(self.listen_btn)
-        main_layout.addLayout(btn_layout)
+        self.config_group.setLayout(grid)
+        layout.addWidget(self.config_group)
 
-        # --- 状态指示 ---
-        status_layout = QHBoxLayout()
-        self.status_label = QLabel("等待初始化...")
-        self.device_label = QLabel("🎧 未连接")
-        self.device_label.setStyleSheet("color: #999; font-size: 11px;")
-        status_layout.addWidget(self.status_label)
-        status_layout.addStretch()
-        status_layout.addWidget(self.device_label)
-        main_layout.addLayout(status_layout)
-
-        # --- 聊天记录 ---
+        # --- 聊天记录区 ---
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
-        self.chat_display.setStyleSheet("background-color: white; border-radius: 8px; padding: 10px; font-size: 13px;")
-        main_layout.addWidget(self.chat_display)
+        layout.addWidget(self.chat_display)
 
-        self.clear_btn = QPushButton("清空聊天记录")
+        # --- 底部控制 ---
+        footer = QHBoxLayout()
+        self.listen_btn = QPushButton("开始对话")
+        self.listen_btn.setObjectName("actionBtn")
+        self.listen_btn.setFixedSize(180, 40)
+        self.update_btn_style(False)
+        self.listen_btn.clicked.connect(self.toggle_listening)
+
+        self.clear_btn = QPushButton("🗑️ 清空")
+        self.clear_btn.setFixedSize(60, 40)
+        self.clear_btn.setStyleSheet("border: none; color: #999;")
         self.clear_btn.clicked.connect(lambda: self.chat_display.clear())
-        main_layout.addWidget(self.clear_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+        footer.addStretch()
+        footer.addWidget(self.listen_btn)
+        footer.addStretch()
+        footer.addWidget(self.clear_btn)
+        layout.addLayout(footer)
 
     def load_saved_config(self):
         self.url_input.setText(self.settings.value("base_url", "https://api.deepseek.com"))
         self.key_input.setText(self.settings.value("api_key", ""))
         self.model_input.setText(self.settings.value("model_name", "deepseek-chat"))
-        self.prompt_input.setPlainText(self.settings.value("system_prompt", "你是一个面试Java岗位的应届生。"))
+        self.prompt_input.setPlainText(self.settings.value("system_prompt", "你是一个面试Java岗位的应届生，请简短回答。"))
 
     def save_and_apply(self):
-        url = self.url_input.text().strip()
-        key = self.key_input.text().strip()
-        model = self.model_input.text().strip()
-        prompt = self.prompt_input.toPlainText().strip()
-        if not key:
-            self.update_status("⚠️ 请填写 API Key")
-            return
+        url, key, model, prompt = self.url_input.text(), self.key_input.text(), self.model_input.text(), self.prompt_input.toPlainText()
         self.settings.setValue("base_url", url)
         self.settings.setValue("api_key", key)
         self.settings.setValue("model_name", model)
         self.settings.setValue("system_prompt", prompt)
         self.worker.llm.update_config(key, url, model, prompt)
-        self.add_system_info("✅ 配置已保存并应用到引擎")
+        self.add_sys_msg("系统配置已更新并应用")
 
     def toggle_listening(self):
-        """切换监听状态的逻辑"""
         new_state = not self.worker.is_listening
         self.worker.set_listening(new_state)
-        if new_state:
-            self.listen_btn.setText("■ 停止监听")
-            self.listen_btn.setStyleSheet("background-color: #FF4D4F; color: white; padding: 10px; font-weight: bold;")
-            self.update_status("🟢 正在实时监听...")
+        self.update_btn_style(new_state)
+
+    def update_btn_style(self, active):
+        if active:
+            self.listen_btn.setText("结束对话")
+            self.listen_btn.setStyleSheet(
+                "background-color: #FF4D4F; border-radius: 20px; color: white; font-weight: bold;")
+            self.status_dot.setStyleSheet("color: #52C41A; font-size: 14px;")
+            self.status_label.setText(" 正在监听")
         else:
-            self.listen_btn.setText("▶ 开始监听")
-            self.listen_btn.setStyleSheet("background-color: #52C41A; color: white; padding: 10px; font-weight: bold;")
-            self.update_status("🛑 监听已暂停")
+            self.listen_btn.setText("开始对话")
+            self.listen_btn.setStyleSheet(
+                "background-color: #1890FF; border-radius: 20px; color: white; font-weight: bold;")
+            self.status_dot.setStyleSheet("color: #FF4D4F; font-size: 14px;")
+            self.status_label.setText(" 监听停止")
 
     def update_status(self, msg):
-        self.status_label.setText(msg)
+        self.status_label.setText(f" {msg}")
 
     def update_device_info(self, name):
-        self.device_label.setText(f"🎧 {name[:25]}...")
+        self.device_label.setText(f"🎧 {name[:25]}")
 
     def add_user_chat(self, text):
-        self.chat_display.append(f"<div style='color:#1890FF; margin-top:5px;'><b>👤 我:</b> {text}</div>")
+        self.chat_display.insertHtml(
+            f"<div style='margin: 8px 0;'><span style='background-color: #E6F7FF; padding: 6px 12px; border-radius: 8px;'><b>我:</b> {text}</span></div><br>")
         self.chat_display.moveCursor(QTextCursor.MoveOperation.End)
 
     def add_ai_chat(self, text):
-        self.chat_display.append(f"<div style='color:#52C41A; margin-top:5px;'><b>🤖 助手:</b> {text}</div><br>")
+        self.chat_display.insertHtml(
+            f"<div style='margin: 8px 0;'><span style='background-color: #F6FFED; padding: 6px 12px; border-radius: 8px;'><b>AI:</b> {text}</span></div><br>")
         self.chat_display.moveCursor(QTextCursor.MoveOperation.End)
 
-    def add_system_info(self, text):
-        self.chat_display.append(f"<p style='color:gray; text-align:center; font-size:11px;'><i>{text}</i></p>")
+    def add_sys_msg(self, text):
+        self.chat_display.append(f"<p style='color: #BFBFBF; font-size: 11px; text-align: center;'>— {text} —</p>")
 
 
 if __name__ == "__main__":
