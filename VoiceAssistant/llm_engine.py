@@ -1,5 +1,7 @@
 import sys
+
 from openai import OpenAI
+
 import config
 
 
@@ -10,7 +12,7 @@ class LLMEngine:
             base_url=config.BASE_URL,
         )
         self.history = [
-            {"role": "system", "content": "你是一个正在面试的应届毕业大学生。回复请保持在50字以内，不要使用Markdown格式。"}
+            {"role": "system", "content": "你是一个正在面试java岗位的应届毕业大学生。回复请保持在50字以内，不要使用Markdown格式。"}
         ]
 
     def get_reply(self, text):

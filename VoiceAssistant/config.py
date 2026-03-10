@@ -7,7 +7,7 @@ BASE_URL = "https://api.deepseek.com"
 MODEL_NAME = "deepseek-chat" # 也就是 DeepSeek-V3
 
 # --- 语音识别配置 ---
-WHISPER_MODEL_SIZE = "base"  # 可选: tiny, base, small
+WHISPER_MODEL_SIZE = "small"  # 可选: tiny, base, small
 LANGUAGE = "zh"
 
 # --- 声音触发配置 ---
