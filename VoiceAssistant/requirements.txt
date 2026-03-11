@@ -1,2 +1,19 @@
-PyAudioWPatch
-numpy
+# GUI 框架
+PyQt6==6.6.1
+
+# 音频采集与处理
+PyAudioWPatch>=0.4.1
+numpy<2.0.0
+wave
+
+# AI 与深度学习
+openai-whisper
+torch
+torchaudio
+
+# API 调用
+openai
+requests
+
+# 配置管理
+python-dotenv
