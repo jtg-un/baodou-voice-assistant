@@ -42,7 +42,7 @@ cd baodou-voice-assistant
 pip install -r requirements.txt
 
 # 运行程序
-python main.py
+python app.py
 ```
 ###
 🛠️ 关键配置
@@ -57,7 +57,7 @@ python main.py
 
 2. API 配置
 在 config.py 中填写你的服务商信息：
-
+也可直接运行app.py在界面中输入并保存
 BaseURL: 火山方舟通常为 https://ark.cn-beijing.volces.com/api/v3
 
 API Key: 你的 API 密钥。
